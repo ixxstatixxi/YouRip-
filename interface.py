@@ -1,62 +1,113 @@
-"""NEXUS desktop interface wired to the media backend and floating player."""
-from __future__ import annotations
+"""
+NEXUS desktop interface.
 
-import json
-import sys
-from pathlib import Path
-
-from PySide6.QtCore import QObject, QProcess, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+Contains:
+- A 3-second animated startup screen (custom-painted 3D-style logo)
+- A placeholder-only homepage
+- No backend or feature functionality yet
+"""
+import math
+from PySide6.QtCore import Qt, QTimer, QRectF, QPointF
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QLinearGradient
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-    QPushButton, QProgressBar, QSplitter, QVBoxLayout, QWidget,
+    QWidget, QMainWindow, QApplication, QVBoxLayout, QHBoxLayout,
+    QLabel, QFrame, QSizePolicy, QGraphicsOpacityEffect
 )
 
-from backend import Backend, DownloadJob, JobState, VideoMeta
 
-
-BG, PANEL, CYAN, MUTED, TEXT = "#080d16", "#101a29", "#42d9ff", "#8294aa", "#eaf4ff"
+BG = "#080d16"
+PANEL = "#101a29"
+PANEL_ALT = "#0c1421"
+CYAN = "#42d9ff"
+MUTED = "#8294aa"
+TEXT = "#eaf4ff"
 
 
 class LogoAnimation(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.phase = 0.0
-        self.setMinimumHeight(220)
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._advance)
-        self.timer.start(16)
+    """Animated wireframe cube and orbital rings, drawn without external assets."""
 
-    def _advance(self):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.phase = 0.0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.advance)
+        self.timer.start(16)
+        self.setMinimumSize(360, 300)
+
+    def advance(self):
         self.phase += 0.025
         self.update()
 
-    def paintEvent(self, _event):
+    def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        center = self.rect().center()
-        radius = min(self.width(), self.height()) * 0.25
+        painter.fillRect(self.rect(), QColor(BG))
+
+        cx = self.width() / 2
+        cy = self.height() / 2 - 8
+        scale = min(self.width(), self.height()) * 0.26
+        angle = self.phase
+
+        # Soft radial glow behind the mark.
+        glow = QRadialGradientCompat(QPointF(cx, cy), scale * 2.5)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(glow))
+        painter.drawEllipse(QPointF(cx, cy), scale * 2.5, scale * 2.5)
+
+        # Three rotating elliptical orbital rings.
         painter.save()
-        painter.translate(center)
-        painter.rotate(self.phase * 35)
-        painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(QColor(66, 217, 255, 100), 2))
-        painter.drawEllipse(-radius * 1.5, -radius * 0.5, radius * 3, radius)
-        painter.rotate(-self.phase * 70)
-        painter.setPen(QPen(QColor(66, 217, 255, 65), 2))
-        painter.drawEllipse(-radius * 1.4, -radius * 0.45, radius * 2.8, radius * 0.9)
-        painter.rotate(self.phase * 35)
-        painter.setPen(QPen(QColor(66, 217, 255, 190), 2))
-        painter.drawRect(-radius * 0.48, -radius * 0.48, radius * 0.96, radius * 0.96)
+        painter.translate(cx, cy)
+        for index, tilt in enumerate((0.25, 1.05, 2.0)):
+            painter.save()
+            painter.rotate(math.degrees(angle * (1 if index != 1 else -0.7) + tilt))
+            pen = QPen(QColor(66, 217, 255, 115 if index == 0 else 65), 1.5)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            rect = QRectF(-scale * 1.65, -scale * 0.52, scale * 3.3, scale * 1.04)
+            painter.drawEllipse(rect)
+            painter.restore()
+        painter.restore()
+
+        # Rotating 3D-style cube.
+        vertices = []
+        for z in (-1, 1):
+            for y in (-1, 1):
+                for x in (-1, 1):
+                    px = x * math.cos(angle) - z * math.sin(angle)
+                    pz = x * math.sin(angle) + z * math.cos(angle)
+                    py = y * math.cos(angle * 0.72) - pz * math.sin(angle * 0.72)
+                    pz2 = y * math.sin(angle * 0.72) + pz * math.cos(angle * 0.72)
+                    depth = 3.8 / (3.8 + pz2 * 0.35)
+                    vertices.append(QPointF(cx + px * scale * depth,
+                                            cy + py * scale * depth))
+
+        edges = [(0,1),(0,2),(0,4),(1,3),(1,5),(2,3),
+                 (2,6),(3,7),(4,5),(4,6),(5,7),(6,7)]
+        for a, b in edges:
+            alpha = 175 if (a + b) % 2 == 0 else 105
+            painter.setPen(QPen(QColor(66, 217, 255, alpha), 2.0))
+            painter.drawLine(vertices[a], vertices[b])
+
+        # Bright central core.
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(CYAN))
-        painter.drawEllipse(-4, -4, 8, 8)
-        painter.restore()
+        painter.drawEllipse(QPointF(cx, cy), 4.5, 4.5)
         painter.end()
 
 
+class QRadialGradientCompat:
+    """Small helper returning a radial gradient with a restrained cyan glow."""
+    def __new__(cls, center, radius):
+        from PySide6.QtGui import QRadialGradient
+        gradient = QRadialGradient(center, radius)
+        gradient.setColorAt(0.0, QColor(35, 150, 205, 48))
+        gradient.setColorAt(0.55, QColor(20, 85, 125, 18))
+        gradient.setColorAt(1.0, QColor(8, 13, 22, 0))
+        return gradient
+
+
 class IntroWindow(QWidget):
-    """Three-second animated startup screen."""
+    """Frameless startup intro; calls on_finished after approximately 3 seconds."""
 
     def __init__(self, on_finished=None):
         super().__init__()
@@ -65,21 +116,37 @@ class IntroWindow(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setFixedSize(760, 520)
         self.setStyleSheet(f"background:{BG}; color:{TEXT};")
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(35, 25, 35, 25)
-        layout.addWidget(QLabel("N E X U S   /   SYSTEM INITIALIZATION"), alignment=Qt.AlignCenter)
+        layout.setSpacing(4)
+
+        top = QLabel("N E X U S   /   SYSTEM INITIALIZATION")
+        top.setAlignment(Qt.AlignCenter)
+        top.setStyleSheet(f"color:{MUTED}; font-size:10px; letter-spacing:3px;")
+        layout.addWidget(top)
+
         layout.addStretch(1)
-        layout.addWidget(LogoAnimation(), 1)
+        self.logo = LogoAnimation()
+        layout.addWidget(self.logo, 1)
+
         title = QLabel("NEXUS")
         title.setAlignment(Qt.AlignCenter)
         title.setFont(QFont("Segoe UI", 27, QFont.Bold))
         title.setStyleSheet(f"color:{TEXT}; letter-spacing:8px;")
         layout.addWidget(title)
+
         subtitle = QLabel("CONNECT  •  EXPLORE  •  BUILD")
         subtitle.setAlignment(Qt.AlignCenter)
         subtitle.setStyleSheet(f"color:{CYAN}; font-size:10px; letter-spacing:3px;")
         layout.addWidget(subtitle)
         layout.addStretch(1)
+
+        footer = QLabel("INITIALIZING INTERFACE")
+        footer.setAlignment(Qt.AlignCenter)
+        footer.setStyleSheet(f"color:{MUTED}; font-size:9px; letter-spacing:2px;")
+        layout.addWidget(footer)
+
         QTimer.singleShot(3000, self.finish_intro)
 
     def finish_intro(self):
@@ -88,207 +155,147 @@ class IntroWindow(QWidget):
             self.on_finished()
 
 
-class EventBridge(QObject):
-    received = Signal(str, object)
+class PlaceholderCard(QFrame):
+    def __init__(self, heading, description="MODULE PLACEHOLDER"):
+        super().__init__()
+        self.setObjectName("placeholderCard")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+
+        title = QLabel(heading)
+        title.setStyleSheet(f"color:{TEXT}; font-size:14px; font-weight:600;")
+        detail = QLabel(description)
+        detail.setStyleSheet(f"color:{MUTED}; font-size:10px; letter-spacing:1px;")
+        detail.setWordWrap(True)
+
+        marker = QFrame()
+        marker.setFixedSize(34, 3)
+        marker.setStyleSheet(f"background:{CYAN}; border:0;")
+        layout.addWidget(title)
+        layout.addWidget(marker)
+        layout.addWidget(detail)
+        layout.addStretch(1)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("NEXUS | YouRip")
+        self.setWindowTitle("NEXUS | Desktop")
         self.resize(1180, 760)
         self.setMinimumSize(900, 600)
-        self.backend = Backend()
-        self.events = EventBridge(self)
-        self.backend.subscribe(self.events.received.emit)
-        self.events.received.connect(self._on_backend_event)
-        self._player = QProcess(self)
-        self._player.setProcessChannelMode(QProcess.SeparateChannels)
-        self._player.readyReadStandardOutput.connect(self._read_player_events)
-        self._pending_play: dict | None = None
-        self._metas: list[VideoMeta] = []
-        self._jobs: dict[int, QListWidgetItem] = {}
-        self._build_ui()
-
-    def _build_ui(self):
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{ background:{BG}; color:{TEXT}; }}
-            QLineEdit, QListWidget {{ background:{PANEL}; border:1px solid #1b3045;
-                border-radius:6px; padding:8px; }}
-            QPushButton {{ background:#142337; border:1px solid #25415c; border-radius:6px;
-                padding:8px 14px; color:{TEXT}; }}
-            QPushButton:hover {{ border-color:{CYAN}; }}
-            QProgressBar {{ border:0; background:#1b2a3d; height:5px; }}
-            QProgressBar::chunk {{ background:{CYAN}; }}
+            QFrame#sidebar {{ background:{PANEL_ALT}; border-right:1px solid #1b2a3d; }}
+            QFrame#placeholderCard {{
+                background:{PANEL}; border:1px solid #1b3045; border-radius:10px;
+            }}
+            QLabel#navItem {{
+                color:{MUTED}; padding:11px 13px; border-radius:6px;
+                font-size:12px;
+            }}
+            QLabel#navItem:hover {{ color:{TEXT}; background:#142337; }}
         """)
-        root = QWidget()
-        layout = QVBoxLayout(root)
-        layout.setContentsMargins(26, 22, 26, 20)
-        header = QHBoxLayout()
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        outer = QHBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(218)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(18, 25, 18, 20)
+        side.setSpacing(9)
+
         brand = QLabel("NEXUS")
-        brand.setFont(QFont("Segoe UI", 22, QFont.Bold))
+        brand.setFont(QFont("Segoe UI", 19, QFont.Bold))
         brand.setStyleSheet(f"color:{CYAN}; letter-spacing:4px;")
-        header.addWidget(brand)
-        header.addWidget(QLabel("YOUTUBE MEDIA WORKSPACE"))
-        header.addStretch(1)
-        self.status = QLabel("Ready")
-        self.status.setStyleSheet(f"color:{MUTED};")
-        header.addWidget(self.status)
-        layout.addLayout(header)
+        side.addWidget(brand)
 
-        search_row = QHBoxLayout()
-        self.query = QLineEdit()
-        self.query.setPlaceholderText("Search YouTube or paste a video URL")
-        self.query.returnPressed.connect(self._search)
-        self.search_button = QPushButton("Search")
-        self.search_button.clicked.connect(self._search)
-        search_row.addWidget(self.query, 1)
-        search_row.addWidget(self.search_button)
-        layout.addLayout(search_row)
+        tagline = QLabel("DESKTOP ENVIRONMENT")
+        tagline.setStyleSheet(f"color:{MUTED}; font-size:8px; letter-spacing:1.5px;")
+        side.addWidget(tagline)
+        side.addSpacing(28)
 
-        splitter = QSplitter(Qt.Horizontal)
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 8, 0)
-        left_layout.addWidget(QLabel("SEARCH RESULTS"))
-        self.results = QListWidget()
-        self.results.itemDoubleClicked.connect(lambda _item: self._play())
-        left_layout.addWidget(self.results, 1)
-        actions = QHBoxLayout()
-        self.play_button = QPushButton("Play")
-        self.play_button.clicked.connect(self._play)
-        self.download_button = QPushButton("Download")
-        self.download_button.clicked.connect(self._download)
-        actions.addWidget(self.play_button)
-        actions.addWidget(self.download_button)
-        left_layout.addLayout(actions)
-        splitter.addWidget(left)
+        for item in ("OVERVIEW", "WORKSPACE", "TOOLS", "SETTINGS"):
+            label = QLabel(item)
+            label.setObjectName("navItem")
+            side.addWidget(label)
 
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(8, 0, 0, 0)
-        right_layout.addWidget(QLabel("DOWNLOAD QUEUE"))
-        self.jobs = QListWidget()
-        right_layout.addWidget(self.jobs, 1)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        right_layout.addWidget(self.progress)
-        self.cancel_button = QPushButton("Cancel selected download")
-        self.cancel_button.clicked.connect(self._cancel)
-        right_layout.addWidget(self.cancel_button)
-        splitter.addWidget(right)
-        splitter.setSizes([700, 400])
-        layout.addWidget(splitter, 1)
-        footer = QLabel(f"Downloads: {self.backend.download_dir}")
-        footer.setStyleSheet(f"color:{MUTED}; font-size:10px;")
-        layout.addWidget(footer)
-        self.setCentralWidget(root)
+        side.addStretch(1)
+        version = QLabel("NEXUS  /  BUILD 001")
+        version.setStyleSheet(f"color:{MUTED}; font-size:9px;")
+        side.addWidget(version)
+        outer.addWidget(sidebar)
 
-    def _search(self):
-        query = self.query.text().strip()
-        if not query:
-            self.status.setText("Enter a search term or URL.")
-            return
-        self.search_button.setEnabled(False)
-        self.status.setText("Searching…")
-        self.backend.search_async(query)
+        content = QWidget()
+        page = QVBoxLayout(content)
+        page.setContentsMargins(34, 29, 34, 28)
+        page.setSpacing(22)
 
-    def _selected_meta(self) -> VideoMeta | None:
-        row = self.results.currentRow()
-        return self._metas[row] if 0 <= row < len(self._metas) else None
+        header_row = QHBoxLayout()
+        header_text = QVBoxLayout()
+        heading = QLabel("Welcome")
+        heading.setFont(QFont("Segoe UI", 25, QFont.DemiBold))
+        heading.setStyleSheet(f"color:{TEXT};")
+        subheading = QLabel("Your workspace is ready to take shape.")
+        subheading.setStyleSheet(f"color:{MUTED}; font-size:12px;")
+        header_text.addWidget(heading)
+        header_text.addWidget(subheading)
+        header_row.addLayout(header_text)
+        header_row.addStretch(1)
 
-    def _download(self):
-        meta = self._selected_meta()
-        if not meta:
-            self.status.setText("Select a search result first.")
-            return
-        try:
-            job = self.backend.download(meta)
-        except Exception as exc:
-            self.status.setText(str(exc))
-            return
-        item = QListWidgetItem(f"#{job.id}  {meta.title} — queued")
-        item.setData(Qt.UserRole, job.id)
-        self.jobs.addItem(item)
-        self._jobs[job.id] = item
+        status = QLabel("●  SYSTEM READY")
+        status.setStyleSheet(f"color:{CYAN}; font-size:10px; letter-spacing:1px;")
+        header_row.addWidget(status, alignment=Qt.AlignVCenter)
+        page.addLayout(header_row)
 
-    def _play(self):
-        meta = self._selected_meta()
-        if not meta:
-            self.status.setText("Select a search result first.")
-            return
-        self.status.setText("Preparing playback…")
-        self.backend.play_async(meta)
+        hero = QFrame()
+        hero.setStyleSheet(f"""
+            QFrame {{ background:#0d1b2b; border:1px solid #1d4057;
+                      border-radius:12px; }}
+        """)
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(25, 23, 25, 23)
+        hero_title = QLabel("YOUR NEXT PROJECT STARTS HERE")
+        hero_title.setStyleSheet(f"color:{CYAN}; font-size:10px; letter-spacing:2px;")
+        hero_body = QLabel("A clean foundation. Room to build.")
+        hero_body.setFont(QFont("Segoe UI", 19, QFont.DemiBold))
+        hero_body.setStyleSheet(f"color:{TEXT};")
+        hero_note = QLabel("Homepage content is intentionally left as placeholders.")
+        hero_note.setStyleSheet(f"color:{MUTED}; font-size:11px;")
+        hero_layout.addWidget(hero_title)
+        hero_layout.addSpacing(5)
+        hero_layout.addWidget(hero_body)
+        hero_layout.addWidget(hero_note)
+        page.addWidget(hero)
 
-    def _start_player(self, details: dict):
-        self._pending_play = details
-        if self._player.state() == QProcess.NotRunning:
-            script = str(Path(__file__).with_name("ghost_window.py"))
-            self._player.start(sys.executable, [script])
-        elif self._player.state() == QProcess.Running:
-            self._send_player({"cmd": "load", **details})
+        section = QLabel("WORKSPACE MODULES")
+        section.setStyleSheet(f"color:{MUTED}; font-size:10px; letter-spacing:2px;")
+        page.addWidget(section)
 
-    def _send_player(self, command: dict):
-        if self._player.state() == QProcess.Running:
-            self._player.write((json.dumps(command) + "\n").encode("utf-8"))
+        cards = QHBoxLayout()
+        cards.setSpacing(14)
+        for title in ("Module One", "Module Two", "Module Three"):
+            card = PlaceholderCard(title)
+            card.setMinimumHeight(155)
+            cards.addWidget(card)
+        page.addLayout(cards)
 
-    def _read_player_events(self):
-        for raw in bytes(self._player.readAllStandardOutput()).splitlines():
-            try:
-                event = json.loads(raw)
-            except (ValueError, UnicodeDecodeError):
-                continue
-            if event.get("event") == "ready" and self._pending_play:
-                self._send_player({"cmd": "load", **self._pending_play})
-                self._pending_play = None
-            elif event.get("event") == "error":
-                self.status.setText(event.get("error", "Player error"))
-            elif event.get("event") == "state":
-                self.status.setText(f"Player: {event.get('state', 'unknown')}")
+        lower = QHBoxLayout()
+        lower.setSpacing(14)
+        for title in ("Recent Activity", "Quick Access"):
+            card = PlaceholderCard(title, "CONTENT WILL BE ADDED LATER")
+            card.setMinimumHeight(170)
+            lower.addWidget(card)
+        page.addLayout(lower)
+        page.addStretch(1)
 
-    def _on_backend_event(self, name: str, data: dict):
-        if name == "search.done":
-            self._metas = data["results"]
-            self.results.clear()
-            for meta in self._metas:
-                line = f"{meta.title}\n{meta.channel or 'Unknown channel'}  ·  {meta.duration_str}"
-                self.results.addItem(QListWidgetItem(line))
-            self.status.setText(f"{len(self._metas)} result(s)")
-            self.search_button.setEnabled(True)
-        elif name == "search.error":
-            self.status.setText(data["error"])
-            self.search_button.setEnabled(True)
-        elif name == "playback.ready":
-            self._start_player({key: data[key] for key in ("url", "title", "kind")})
-        elif name == "playback.error":
-            self.status.setText(data["error"])
-        elif name in ("job.updated", "job.progress"):
-            self._update_job(data["job"])
+        footer = QLabel("NEXUS DESKTOP  •  MODULAR FOUNDATION")
+        footer.setStyleSheet(f"color:#52657b; font-size:9px; letter-spacing:1px;")
+        page.addWidget(footer)
 
-    def _update_job(self, job: DownloadJob):
-        item = self._jobs.get(job.id)
-        if item is None:
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, job.id)
-            self.jobs.addItem(item)
-            self._jobs[job.id] = item
-        item.setText(f"#{job.id}  {job.meta.title} — {job.state.value} ({job.progress:.0%})")
-        if job.state == JobState.FAILED:
-            item.setToolTip(job.error or "Download failed")
-        elif job.state == JobState.DONE:
-            item.setToolTip(job.filepath or "")
-        if job.state in (JobState.RUNNING, JobState.QUEUED):
-            self.progress.setValue(round(job.progress * 100))
-
-    def _cancel(self):
-        item = self.jobs.currentItem()
-        if item and self.backend.cancel(int(item.data(Qt.UserRole))):
-            self.status.setText("Cancellation requested.")
-
-    def closeEvent(self, event):
-        if self._player.state() == QProcess.Running:
-            self._send_player({"cmd": "quit"})
-            self._player.waitForFinished(1000)
-        self.backend.close()
-        event.accept()
+        outer.addWidget(content, 1)
